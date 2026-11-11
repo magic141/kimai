@@ -7,7 +7,7 @@
 # als geplante Aufgabe ausführen.
 #
 # Optionale Werte in der .env (nur auf dem Server, nicht eingecheckt):
-#   PHP_BIN=/opt/plesk/php/8.3/bin/php     # sonst: höchste installierte Plesk-PHP-Version
+#   PHP_BIN=/opt/plesk/php/8.1/bin/php     # sonst: höchste Plesk-PHP-Version, die zur composer.json passt
 #   COMPOSER_PHAR=/pfad/zu/composer.phar   # sonst: ./composer.phar bzw. Plesk-Composer
 #   DEPLOY_NOTIFY_EMAIL=admin@example.org  # Mail bei Abbruch
 #
@@ -46,17 +46,58 @@ notify_failure() {
 trap 'notify_failure $LINENO' ERR
 
 # ── PHP auflösen ──────────────────────────────────────────────────────────────
+# 1) PHP_BIN aus der .env (manuelle Übersteuerung, wird nur auf Erweiterungen geprüft)
+# 2) sonst: höchste installierte Plesk-PHP-Version, die zum "php"-Constraint der
+#    composer.json passt UND alle nötigen Erweiterungen hat (die Kommandozeilen-PHP
+#    von Plesk hat pro Version eigene Erweiterungen, unabhängig vom Webserver).
+EXTRA_EXT=""
+case "$(env_value DATABASE_URL)" in
+  mysql:*|mariadb:*) EXTRA_EXT="pdo_mysql" ;;
+esac
+
 PHP="$(env_value PHP_BIN)"
-if [ -z "$PHP" ]; then
-  for _p in /opt/plesk/php/*/bin/php; do
-    [ -x "$_p" ] && PHP="$_p"   # Glob ist aufsteigend sortiert -> höchste Version gewinnt
+_cand_ver=""   # höchste zur composer.json passende Version, der Erweiterungen fehlen
+_cand_missing=""
+if [ -n "$PHP" ]; then
+  if [ ! -x "$PHP" ]; then
+    echo "X PHP_BIN ist nicht ausführbar: $PHP"
+    exit 1
+  fi
+  if ! _cand_missing="$("$PHP" scripts/php-check-extensions.php composer.json $EXTRA_EXT)"; then
+    _cand_ver="$PHP"
+    PHP=""
+  fi
+else
+  for _p in ${PHP_GLOB:-/opt/plesk/php/*/bin/php}; do
+    [ -x "$_p" ] || continue
+    "$_p" scripts/php-matches-composer.php composer.json || continue
+    if _m="$("$_p" scripts/php-check-extensions.php composer.json $EXTRA_EXT)"; then
+      PHP="$_p"   # Glob ist aufsteigend sortiert -> höchste vollständige Version gewinnt
+    else
+      _cand_ver="$_p"; _cand_missing="$_m"
+    fi
   done
 fi
-if [ -z "$PHP" ] || [ ! -x "$PHP" ]; then
-  echo "X Kein PHP gefunden. PHP_BIN in .env setzen (z. B. /opt/plesk/php/8.3/bin/php)."
+
+if [ -z "$PHP" ]; then
+  if [ -n "$_cand_ver" ]; then
+    echo "X PHP $_cand_ver passt zur composer.json, es fehlen aber Erweiterungen: $_cand_missing"
+    echo "  Erweiterungen für diese Plesk-PHP-Version installieren/aktivieren lassen oder eine andere Version bereitstellen."
+  else
+    _any=""
+    _c=""
+    for _p in ${PHP_GLOB:-/opt/plesk/php/*/bin/php}; do
+      if [ -x "$_p" ]; then _c="$_c ${_p#/opt/plesk/php/}"; [ -n "$_any" ] || _any="$_p"; fi
+    done
+    _need=""
+    if [ -n "$_any" ]; then _need="$("$_any" scripts/php-matches-composer.php composer.json --print 2>/dev/null || true)"; fi
+    echo "X Kein passendes PHP gefunden. composer.json verlangt: ${_need:-unbekannt}."
+    echo "  Installiert:${_c:- keine Plesk-PHP-Version gefunden}"
+    echo "  Passende Version in Plesk installieren oder PHP_BIN in .env setzen."
+  fi
   exit 1
 fi
-echo "==> PHP: $PHP ($("$PHP" -r 'echo PHP_VERSION;'))"
+echo "==> PHP: $PHP ($("$PHP" -r 'echo PHP_VERSION;')), Erweiterungen vollständig"
 
 # ── Composer auflösen ─────────────────────────────────────────────────────────
 COMPOSER="$(env_value COMPOSER_PHAR)"
