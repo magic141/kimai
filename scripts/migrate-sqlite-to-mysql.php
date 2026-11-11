@@ -27,7 +27,12 @@ if (PHP_SAPI !== 'cli') {
 
 const SKIP_TABLES = ['doctrine_migration_versions', 'sqlite_sequence'];
 
-function fail(string $message): never
+function starts_with(string $haystack, string $needle): bool
+{
+    return strncmp($haystack, $needle, strlen($needle)) === 0;
+}
+
+function fail(string $message)
 {
     fwrite(STDERR, "FEHLER: $message\n");
     exit(1);
@@ -53,9 +58,9 @@ foreach (array_slice($argv, 1) as $arg) {
         $truncate = true;
     } elseif ($arg === '--dry-run') {
         $dryRun = true;
-    } elseif (str_starts_with($arg, '--env=')) {
+    } elseif (starts_with($arg, '--env=')) {
         $envPath = substr($arg, 6);
-    } elseif (str_starts_with($arg, '--')) {
+    } elseif (starts_with($arg, '--')) {
         fail("Unbekannte Option: $arg");
     } else {
         $sqlitePath = $arg;
@@ -65,7 +70,7 @@ foreach (array_slice($argv, 1) as $arg) {
 if ($sqlitePath === null) {
     fail('SQLite-Datei fehlt. Beispiel: scripts/migrate-sqlite-to-mysql.php var/data/kimai.sqlite');
 }
-if (!str_starts_with($sqlitePath, '/')) {
+if (!starts_with($sqlitePath, '/')) {
     $sqlitePath = dirname(__DIR__) . '/' . $sqlitePath;
 }
 if (!is_file($sqlitePath) || !is_readable($sqlitePath)) {
@@ -84,7 +89,7 @@ if (!is_file($envPath) || !is_readable($envPath)) {
 $url = null;
 foreach (file($envPath, FILE_IGNORE_NEW_LINES) ?: [] as $line) {
     $line = trim($line);
-    if (str_starts_with($line, 'DATABASE_URL=')) {
+    if (starts_with($line, 'DATABASE_URL=')) {
         $url = trim(substr($line, strlen('DATABASE_URL=')), " \t\"'");
     }
 }
