@@ -7,7 +7,7 @@
 # als geplante Aufgabe ausführen.
 #
 # Optionale Werte in der .env (nur auf dem Server, nicht eingecheckt):
-#   PHP_BIN=/opt/plesk/php/8.3/bin/php     # sonst: höchste installierte Plesk-PHP-Version
+#   PHP_BIN=/opt/plesk/php/8.1/bin/php     # sonst: höchste Plesk-PHP-Version, die zur composer.json passt
 #   COMPOSER_PHAR=/pfad/zu/composer.phar   # sonst: ./composer.phar bzw. Plesk-Composer
 #   DEPLOY_NOTIFY_EMAIL=admin@example.org  # Mail bei Abbruch
 #
@@ -46,14 +46,31 @@ notify_failure() {
 trap 'notify_failure $LINENO' ERR
 
 # ── PHP auflösen ──────────────────────────────────────────────────────────────
+# 1) PHP_BIN aus der .env (manuelle Übersteuerung)
+# 2) sonst: höchste installierte Plesk-PHP-Version, die zum "php"-Constraint der
+#    composer.json passt (Stufen 1.30 / 2.0 / aktuell erlauben unterschiedliche PHP-Versionen)
 PHP="$(env_value PHP_BIN)"
 if [ -z "$PHP" ]; then
-  for _p in /opt/plesk/php/*/bin/php; do
-    [ -x "$_p" ] && PHP="$_p"   # Glob ist aufsteigend sortiert -> höchste Version gewinnt
+  for _p in ${PHP_GLOB:-/opt/plesk/php/*/bin/php}; do
+    if [ -x "$_p" ] && "$_p" scripts/php-matches-composer.php composer.json; then
+      PHP="$_p"   # Glob ist aufsteigend sortiert -> höchste passende Version gewinnt
+    fi
   done
 fi
 if [ -z "$PHP" ] || [ ! -x "$PHP" ]; then
-  echo "X Kein PHP gefunden. PHP_BIN in .env setzen (z. B. /opt/plesk/php/8.3/bin/php)."
+  _c=""
+  for _p in ${PHP_GLOB:-/opt/plesk/php/*/bin/php}; do
+    if [ -x "$_p" ]; then _c="$_c ${_p#/opt/plesk/php/}"; fi
+  done
+  _any=""
+  for _p in ${PHP_GLOB:-/opt/plesk/php/*/bin/php}; do
+    if [ -x "$_p" ]; then _any="$_p"; break; fi
+  done
+  _need=""
+  if [ -n "$_any" ]; then _need="$("$_any" scripts/php-matches-composer.php composer.json --print 2>/dev/null || true)"; fi
+  echo "X Kein passendes PHP gefunden. composer.json verlangt: ${_need:-unbekannt}."
+  echo "  Installiert:${_c:- keine Plesk-PHP-Version gefunden}"
+  echo "  Passende Version in Plesk installieren oder PHP_BIN in .env setzen."
   exit 1
 fi
 echo "==> PHP: $PHP ($("$PHP" -r 'echo PHP_VERSION;'))"
