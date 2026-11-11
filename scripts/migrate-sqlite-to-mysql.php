@@ -153,74 +153,108 @@ if ($copy === []) {
     fail('Keine gemeinsamen Tabellen gefunden. Wurde im Ziel zuerst "kimai:install -n" ausgeführt?');
 }
 
-// ── Kopieren ────────────────────────────────────────────────────────────────
-$errors = 0;
-$report = [];
-
-if (!$dryRun) {
-    $dst->exec('SET FOREIGN_KEY_CHECKS = 0');
-}
+// ── Vorprüfung (schreibt nichts) ────────────────────────────────────────────
+// Bricht ab, bevor Daten angefasst werden, wenn das Ziel-Schema nicht zu den
+// Quelldaten passt (typisch: andere Kimai-Version beim kimai:install).
+$plan = [];
+$problems = [];
 
 foreach ($copy as $table) {
     $srcCols = array_column($src->query('PRAGMA table_info(' . ident($table) . ')')->fetchAll(), 'name');
-    $dstCols = array_column($dst->query('SHOW COLUMNS FROM ' . ident($table))->fetchAll(), 'Field');
+    $dstInfo = $dst->query('SHOW COLUMNS FROM ' . ident($table))->fetchAll();
+    $dstCols = array_column($dstInfo, 'Field');
     $cols = array_values(array_intersect($srcCols, $dstCols));
 
-    $onlySrc = array_diff($srcCols, $dstCols);
+    $onlySrc = array_values(array_diff($srcCols, $dstCols));
     if ($onlySrc !== []) {
         echo "WARNUNG: $table – Spalten nur in der Quelle (werden nicht übernommen): " . implode(', ', $onlySrc) . "\n";
     }
-    if ($cols === []) {
-        echo "WARNUNG: $table – keine gemeinsamen Spalten, übersprungen.\n";
-        continue;
+
+    // Zielspalten ohne Quelle: nur ein Problem, wenn NOT NULL, ohne Standardwert und ohne Auto-Increment.
+    $missing = [];
+    foreach ($dstInfo as $col) {
+        if (in_array($col['Field'], $srcCols, true)) {
+            continue;
+        }
+        $required = $col['Null'] === 'NO' && $col['Default'] === null && stripos((string) $col['Extra'], 'auto_increment') === false;
+        if ($required) {
+            $missing[] = $col['Field'];
+        } else {
+            echo "HINWEIS: $table – Spalte {$col['Field']} fehlt in der Quelle, es gilt der Standardwert des Ziels.\n";
+        }
     }
 
     $total = (int) $src->query('SELECT COUNT(*) FROM ' . ident($table))->fetchColumn();
-    $written = 0;
 
-    if (!$dryRun) {
+    if ($cols === []) {
+        if ($total > 0) {
+            $problems[] = "$table: keine gemeinsamen Spalten, aber $total Zeilen in der Quelle.";
+        }
+        continue;
+    }
+    if ($missing !== [] && $total > 0) {
+        $problems[] = "$table: Pflichtspalten ohne Quelle und ohne Standardwert im Ziel: " . implode(', ', $missing) . '.';
+    }
+
+    $plan[$table] = ['cols' => $cols, 'total' => $total];
+}
+
+if ($problems !== []) {
+    echo "\nSchema passt nicht zu den Daten – es wurde NICHTS geschrieben:\n";
+    foreach ($problems as $problem) {
+        echo "  - $problem\n";
+    }
+    fail('Kimai-Version im Ziel muss der Version der SQLite-Daten entsprechen (zuerst die passende Version mit "kimai:install -n" einrichten).');
+}
+
+// ── Kopieren (alles oder nichts) ────────────────────────────────────────────
+$errors = 0;
+$written = [];
+
+if (!$dryRun) {
+    $dst->exec('SET FOREIGN_KEY_CHECKS = 0');
+    $dst->beginTransaction();
+
+    foreach ($plan as $table => $info) {
+        $written[$table] = 0;
         try {
-            $dst->beginTransaction();
             if ($truncate) {
                 $dst->exec('DELETE FROM ' . ident($table));
             }
-            $colList = implode(', ', array_map('ident', $cols));
+            $colList = implode(', ', array_map('ident', $info['cols']));
             $stmt = $dst->prepare(sprintf(
                 'REPLACE INTO %s (%s) VALUES (%s)',
                 ident($table),
                 $colList,
-                implode(', ', array_fill(0, count($cols), '?'))
+                implode(', ', array_fill(0, count($info['cols']), '?'))
             ));
-            $rows = $src->query('SELECT ' . $colList . ' FROM ' . ident($table));
-            foreach ($rows as $row) {
+            foreach ($src->query('SELECT ' . $colList . ' FROM ' . ident($table)) as $row) {
                 $stmt->execute(array_values($row));
-                $written++;
+                $written[$table]++;
             }
-            $dst->commit();
         } catch (PDOException $e) {
-            if ($dst->inTransaction()) {
-                $dst->rollBack();
-            }
             $errors++;
             echo "FEHLER in $table: " . $e->getMessage() . "\n";
-            $written = 0;
         }
     }
 
-    $inDst = (int) $dst->query('SELECT COUNT(*) FROM ' . ident($table))->fetchColumn();
-    $report[] = [$table, $total, $dryRun ? '-' : $written, $inDst];
-}
-
-if (!$dryRun) {
+    if ($errors === 0) {
+        $dst->commit();
+    } else {
+        $dst->rollBack();
+        echo "\nAlle Änderungen wurden zurückgerollt, das Ziel ist unverändert.\n";
+    }
     $dst->exec('SET FOREIGN_KEY_CHECKS = 1');
 }
 
 // ── Bericht ─────────────────────────────────────────────────────────────────
-printf("%-40s %8s %8s %8s\n", 'Tabelle', 'Quelle', 'Kopiert', 'Ziel');
-foreach ($report as [$table, $total, $written, $inDst]) {
-    $flag = (!$dryRun && $total !== $inDst) ? '  <-- Abweichung' : '';
-    printf("%-40s %8d %8s %8d%s\n", $table, $total, (string) $written, $inDst, $flag);
+printf("\n%-40s %8s %8s %8s\n", 'Tabelle', 'Quelle', 'Kopiert', 'Ziel');
+foreach ($plan as $table => $info) {
+    $inDst = (int) $dst->query('SELECT COUNT(*) FROM ' . ident($table))->fetchColumn();
+    $copied = $dryRun ? '-' : (string) ($errors === 0 ? $written[$table] : 0);
+    $flag = (!$dryRun && $errors === 0 && $info['total'] !== $inDst) ? '  <-- Abweichung' : '';
+    printf("%-40s %8d %8s %8d%s\n", $table, $info['total'], $copied, $inDst, $flag);
 }
 
-echo $errors === 0 ? "\nOK: Migration abgeschlossen.\n" : "\nFERTIG MIT $errors FEHLER(N) – siehe oben.\n";
+echo $errors === 0 ? "\nOK: Migration abgeschlossen.\n" : "\nABGEBROCHEN: $errors Tabelle(n) mit Fehler, nichts übernommen.\n";
 exit($errors === 0 ? 0 : 1);
