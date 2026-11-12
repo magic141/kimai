@@ -1,0 +1,22 @@
+{
+    "name": "magic141/kimai-logserver-bundle",
+    "description": "Sendet Anmeldungen und Einstellungsänderungen an den Logserver-Collector",
+    "type": "kimai-plugin",
+    "license": "AGPL-3.0-or-later",
+    "version": "1.0.0",
+    "require": {
+        "php": ">=8.2"
+    },
+    "autoload": {
+        "psr-4": {
+            "KimaiPlugin\\LogserverBundle\\": ""
+        }
+    },
+    "extra": {
+        "kimai": {
+            "require": 27200,
+            "version": "1.0.0",
+            "name": "Logserver"
+        }
+    }
+}

@@ -1,0 +1,19 @@
+services:
+    _defaults:
+        autowire: true
+        autoconfigure: true
+
+    KimaiPlugin\LogserverBundle\:
+        resource: '../../'
+        exclude: '../../{DependencyInjection,Resources,Tests,LogserverBundle.php}'
+
+    # Konfiguration aus der .env (ohne LOGSERVER_URL bleibt das Plugin stumm)
+    KimaiPlugin\LogserverBundle\Client\LogserverClient:
+        arguments:
+            $url: '%env(string:default::LOGSERVER_URL)%'
+            $project: '%env(string:default::LOGSERVER_PROJECT)%'
+            $level: '%env(string:default::LOGSERVER_LEVEL)%'
+            $stateFile: '%kernel.project_dir%/var/data/logserver-plugin.json'
+
+    KimaiPlugin\LogserverBundle\Client\LogSinkInterface:
+        alias: KimaiPlugin\LogserverBundle\Client\LogserverClient
