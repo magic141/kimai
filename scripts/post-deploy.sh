@@ -108,7 +108,14 @@ _cand_ver=""   # höchste zur composer.json passende Version, der Erweiterungen 
 _cand_missing=""
 _seen=""       # gefundene PHP-Binaries (für die Fehlermeldung)
 _any=""
-PHP_PATTERNS="${PHP_GLOB:-/opt/plesk/php/*/bin/php /usr/local/php*/bin/php /opt/php*/bin/php /opt/alt/php*/usr/bin/php /opt/remi/php*/root/usr/bin/php /usr/bin/php /usr/bin/php[0-9]* /usr/local/bin/php /usr/local/bin/php[0-9]*}"
+_vhost_php=""
+case "$PWD" in
+  /var/www/vhosts/*)
+    _rest="${PWD#/var/www/vhosts/}"; _sysuser="${_rest%%/*}"
+    _vhost_php="/var/www/vhosts/$_sysuser/.phpenv/versions/*/bin/php /var/www/vhosts/$_sysuser/php*/bin/php"
+    ;;
+esac
+PHP_PATTERNS="${PHP_GLOB:-$_vhost_php /opt/plesk/php/*/bin/php /usr/local/php*/bin/php /opt/php*/bin/php /opt/alt/php*/usr/bin/php /opt/remi/php*/root/usr/bin/php /usr/bin/php /usr/bin/php[0-9]* /usr/local/bin/php /usr/local/bin/php[0-9]*}"
 _path_php="$(command -v php 2>/dev/null || true)"
 
 if [ -n "$PHP" ]; then
@@ -151,6 +158,19 @@ if [ -z "$PHP" ]; then
     log "  Gefundene PHP-Binaries:${_seen:- keine}"
     log "  Gesucht in: $PHP_PATTERNS${_path_php:+ (PATH: $_path_php)}"
     log "  Pfad der gewünschten PHP-Binary als PHP_BIN in die .env eintragen."
+    # Diagnose: was ist in diesem Kontext überhaupt sichtbar? (kann nach der Einrichtung entfernt werden)
+    log "  Diagnose: Benutzer=$(id -un 2>/dev/null || echo ?) HOME=${HOME:-} PATH=$PATH"
+    for _d in /opt /opt/plesk /opt/plesk/php /usr/local/bin /usr/bin; do
+      if [ -d "$_d" ]; then
+        _e=""
+        for _f in "$_d"/php* "$_d"/plesk "$_d"/alt "$_d"/remi; do
+          if [ -e "$_f" ]; then _e="$_e ${_f##*/}"; fi
+        done
+        log "  $_d:${_e:- (nichts PHP-Ähnliches)}"
+      else
+        log "  $_d: nicht vorhanden"
+      fi
+    done
   fi
   exit 1
 fi
