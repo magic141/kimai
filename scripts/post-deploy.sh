@@ -106,6 +106,18 @@ esac
 PHP="$(env_value PHP_BIN)"
 _cand_ver=""   # höchste zur composer.json passende Version, der Erweiterungen fehlen
 _cand_missing=""
+_seen=""       # gefundene PHP-Binaries (für die Fehlermeldung)
+_any=""
+_vhost_php=""
+case "$PWD" in
+  /var/www/vhosts/*)
+    _rest="${PWD#/var/www/vhosts/}"; _sysuser="${_rest%%/*}"
+    _vhost_php="/var/www/vhosts/$_sysuser/.phpenv/versions/*/bin/php /var/www/vhosts/$_sysuser/php*/bin/php"
+    ;;
+esac
+PHP_PATTERNS="${PHP_GLOB:-$_vhost_php /opt/plesk/php/*/bin/php /usr/local/php*/bin/php /opt/php*/bin/php /opt/alt/php*/usr/bin/php /opt/remi/php*/root/usr/bin/php /usr/bin/php /usr/bin/php[0-9]* /usr/local/bin/php /usr/local/bin/php[0-9]*}"
+_path_php="$(command -v php 2>/dev/null || true)"
+
 if [ -n "$PHP" ]; then
   if [ ! -x "$PHP" ]; then
     log "X PHP_BIN ist nicht ausführbar: $PHP"
@@ -116,11 +128,19 @@ if [ -n "$PHP" ]; then
     PHP=""
   fi
 else
-  for _p in ${PHP_GLOB:-/opt/plesk/php/*/bin/php}; do
+  _best=""
+  for _p in $PHP_PATTERNS $_path_php; do
     [ -x "$_p" ] || continue
+    _v="$("$_p" -r 'echo PHP_VERSION;' 2>/dev/null)" || continue
+    case "$_v" in [0-9]*.[0-9]*.*) ;; *) continue ;; esac   # php-fpm, php-cgi u. ä. überspringen
+    _seen="$_seen $_p($_v)"
+    [ -n "$_any" ] || _any="$_p"
     "$_p" scripts/php-matches-composer.php composer.json || continue
     if _m="$("$_p" scripts/php-check-extensions.php composer.json $EXTRA_EXT)"; then
-      PHP="$_p"   # Glob ist aufsteigend sortiert -> höchste vollständige Version gewinnt
+      # die höchste passende, vollständige Version gewinnt
+      if [ -z "$PHP" ] || "$_p" -r 'exit(version_compare($argv[1], $argv[2], ">") ? 0 : 1);' -- "$_v" "$_best"; then
+        PHP="$_p"; _best="$_v"
+      fi
     else
       _cand_ver="$_p"; _cand_missing="$_m"
     fi
@@ -130,18 +150,27 @@ fi
 if [ -z "$PHP" ]; then
   if [ -n "$_cand_ver" ]; then
     log "X PHP $_cand_ver passt zur composer.json, es fehlen aber Erweiterungen: $_cand_missing"
-    log "  Erweiterungen für diese Plesk-PHP-Version installieren/aktivieren lassen oder eine andere Version bereitstellen."
+    log "  Erweiterungen für diese PHP-Version installieren/aktivieren lassen oder eine andere Version bereitstellen."
   else
-    _any=""
-    _c=""
-    for _p in ${PHP_GLOB:-/opt/plesk/php/*/bin/php}; do
-      if [ -x "$_p" ]; then _c="$_c ${_p#/opt/plesk/php/}"; [ -n "$_any" ] || _any="$_p"; fi
-    done
     _need=""
     if [ -n "$_any" ]; then _need="$("$_any" scripts/php-matches-composer.php composer.json --print 2>/dev/null || true)"; fi
     log "X Kein passendes PHP gefunden. composer.json verlangt: ${_need:-unbekannt}."
-    log "  Installiert:${_c:- keine Plesk-PHP-Version gefunden}"
-    log "  Passende Version in Plesk installieren oder PHP_BIN in .env setzen."
+    log "  Gefundene PHP-Binaries:${_seen:- keine}"
+    log "  Gesucht in: $PHP_PATTERNS${_path_php:+ (PATH: $_path_php)}"
+    log "  Pfad der gewünschten PHP-Binary als PHP_BIN in die .env eintragen."
+    # Diagnose: was ist in diesem Kontext überhaupt sichtbar? (kann nach der Einrichtung entfernt werden)
+    log "  Diagnose: Benutzer=$(id -un 2>/dev/null || echo ?) HOME=${HOME:-} PATH=$PATH"
+    for _d in /opt /opt/plesk /opt/plesk/php /usr/local/bin /usr/bin; do
+      if [ -d "$_d" ]; then
+        _e=""
+        for _f in "$_d"/php* "$_d"/plesk "$_d"/alt "$_d"/remi; do
+          if [ -e "$_f" ]; then _e="$_e ${_f##*/}"; fi
+        done
+        log "  $_d:${_e:- (nichts PHP-Ähnliches)}"
+      else
+        log "  $_d: nicht vorhanden"
+      fi
+    done
   fi
   exit 1
 fi
