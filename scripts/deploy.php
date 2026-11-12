@@ -10,11 +10,6 @@
  *   Argumente:  keine
  * Jeder Schritt wird in var/log/post-deploy.log protokolliert.
  *
- * Automatik nach einem Git-Pull (die Git-Zusatzaktion hat in Plesk kein PHP):
- *   scripts/post-deploy.sh legt var/deploy.requested an. Eine geplante Aufgabe
- *   "PHP-Skript ausführen" mit Argument --if-requested (z. B. alle 5 Minuten)
- *   führt den Deploy aus, sobald der Marker da ist, und bleibt sonst stumm.
- *
  * Optional in der .env (nur auf dem Server):
  *   COMPOSER_PHAR=/pfad/zu/composer.phar   # sonst ./composer.phar bzw. Plesk-Composer
  *
@@ -29,12 +24,6 @@ if (PHP_SAPI !== 'cli') {
 
 $root = dirname(__DIR__);
 chdir($root);
-
-$ifRequested = in_array('--if-requested', array_slice($argv, 1), true);
-$requestFile = $root . '/var/deploy.requested';
-if ($ifRequested && !is_file($requestFile)) {
-    exit(0); // nichts angefordert: still beenden
-}
 
 $logFile = $root . '/var/log/post-deploy.log';
 if (!is_dir(dirname($logFile))) {
@@ -110,14 +99,7 @@ if (!is_file($root . '/.env')) {
 // ── Sperre (wird beim Prozessende automatisch freigegeben) ──────────────────
 $lock = fopen($root . '/var/deploy.lock', 'c');
 if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
-    if ($ifRequested) {
-        exit(0); // läuft schon; der Marker bleibt und wird beim nächsten Takt geprüft
-    }
     failDeploy('Ein anderer Deploy läuft bereits – Abbruch. Erst dessen Ende abwarten.');
-}
-if ($ifRequested) {
-    @unlink($requestFile); // Marker verbrauchen; schlägt der Lauf fehl, ist ein manueller Start nötig
-    logmsg('==> Angeforderter Deploy (Marker var/deploy.requested)');
 }
 
 logmsg('==> Deploy gestartet in ' . $root);
