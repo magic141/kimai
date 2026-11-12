@@ -11,12 +11,60 @@
 #   COMPOSER_PHAR=/pfad/zu/composer.phar   # sonst: ./composer.phar bzw. Plesk-Composer
 #   DEPLOY_NOTIFY_EMAIL=admin@example.org  # Mail bei Abbruch
 #
+# Jeder Schritt wird zusätzlich in var/log/post-deploy.log protokolliert
+# (Plesk zeigt die Ausgabe der Bereitstellungsaktion oft nicht an).
+# Eine Sperre (var/deploy.lock) verhindert zwei gleichzeitige Läufe.
+# Ohne Composer auf dem Server: ein fertig hochgeladenes vendor/ wird verwendet.
+#
 # Minimale Umgebung: kein sicherer PATH/HOME im Deploy-Kontext, daher nur
 # bash-Builtins und absolute Pfade.
 set -euo pipefail
 cd "${0%/*}/.."
 
 PROJ="${PWD##*/}"
+
+# ── Plausibilität: richtiger Ordner? ──────────────────────────────────────────
+if [ "$PROJ" = "public" ]; then
+  echo "X Das Skript liegt in public/. Der Bereitstellungspfad in Plesk muss der Anwendungsstamm sein (Elternordner von public/)."
+  exit 1
+fi
+if [ ! -f bin/console ]; then
+  echo "X bin/console fehlt in $PWD – falscher Ordner oder unvollständige Bereitstellung."
+  exit 1
+fi
+
+# ── Log und Sperre ────────────────────────────────────────────────────────────
+mkdir -p var/log
+LOG="$PWD/var/log/post-deploy.log"
+log() {
+  local ts
+  ts="$(printf '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null)" || ts="-"
+  printf '%s\n' "$*"
+  printf '%s %s\n' "$ts" "$*" >> "$LOG"
+}
+# Führt einen Befehl aus und schreibt seine Ausgabe in die Konsole und ins Log.
+run_logged() {
+  "$@" 2>&1 | while IFS= read -r _l || [ -n "$_l" ]; do
+    printf '%s\n' "$_l"
+    printf '%s\n' "$_l" >> "$LOG"
+  done
+}
+
+LOCK="$PWD/var/deploy.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  _pid=""
+  if [ -f "$LOCK/pid" ]; then read -r _pid < "$LOCK/pid" || true; fi
+  if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+    log "X Ein anderer Deploy läuft bereits (PID $_pid) – Abbruch. Erst dessen Ende abwarten."
+    exit 1
+  fi
+  log "! Verwaiste Sperre eines beendeten Laufs entfernt."
+  rm -rf "$LOCK"
+  mkdir "$LOCK"
+fi
+printf '%s\n' "$$" > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+log "==> Deploy gestartet in $PWD (PID $$)"
 
 # ── .env-Wert lesen (ohne Coreutils) ──────────────────────────────────────────
 env_value() {
@@ -37,7 +85,7 @@ env_value() {
 DEPLOY_NOTIFY_EMAIL="$(env_value DEPLOY_NOTIFY_EMAIL)"
 notify_failure() {
   local msg="Deployment von ${PROJ} fehlgeschlagen (Zeile $1). Siehe Plesk -> Git -> Deployment-Log."
-  echo "X $msg"
+  log "X $msg Details: $LOG"
   if [ -n "$DEPLOY_NOTIFY_EMAIL" ] && [ -x /usr/sbin/sendmail ]; then
     printf 'To: %s\nSubject: Deploy fehlgeschlagen: %s\n\n%s\n' \
       "$DEPLOY_NOTIFY_EMAIL" "$PROJ" "$msg" | /usr/sbin/sendmail -t 2>/dev/null || true
@@ -60,7 +108,7 @@ _cand_ver=""   # höchste zur composer.json passende Version, der Erweiterungen 
 _cand_missing=""
 if [ -n "$PHP" ]; then
   if [ ! -x "$PHP" ]; then
-    echo "X PHP_BIN ist nicht ausführbar: $PHP"
+    log "X PHP_BIN ist nicht ausführbar: $PHP"
     exit 1
   fi
   if ! _cand_missing="$("$PHP" scripts/php-check-extensions.php composer.json $EXTRA_EXT)"; then
@@ -81,8 +129,8 @@ fi
 
 if [ -z "$PHP" ]; then
   if [ -n "$_cand_ver" ]; then
-    echo "X PHP $_cand_ver passt zur composer.json, es fehlen aber Erweiterungen: $_cand_missing"
-    echo "  Erweiterungen für diese Plesk-PHP-Version installieren/aktivieren lassen oder eine andere Version bereitstellen."
+    log "X PHP $_cand_ver passt zur composer.json, es fehlen aber Erweiterungen: $_cand_missing"
+    log "  Erweiterungen für diese Plesk-PHP-Version installieren/aktivieren lassen oder eine andere Version bereitstellen."
   else
     _any=""
     _c=""
@@ -91,13 +139,13 @@ if [ -z "$PHP" ]; then
     done
     _need=""
     if [ -n "$_any" ]; then _need="$("$_any" scripts/php-matches-composer.php composer.json --print 2>/dev/null || true)"; fi
-    echo "X Kein passendes PHP gefunden. composer.json verlangt: ${_need:-unbekannt}."
-    echo "  Installiert:${_c:- keine Plesk-PHP-Version gefunden}"
-    echo "  Passende Version in Plesk installieren oder PHP_BIN in .env setzen."
+    log "X Kein passendes PHP gefunden. composer.json verlangt: ${_need:-unbekannt}."
+    log "  Installiert:${_c:- keine Plesk-PHP-Version gefunden}"
+    log "  Passende Version in Plesk installieren oder PHP_BIN in .env setzen."
   fi
   exit 1
 fi
-echo "==> PHP: $PHP ($("$PHP" -r 'echo PHP_VERSION;')), Erweiterungen vollständig"
+log "==> PHP: $PHP ($("$PHP" -r 'echo PHP_VERSION;')), Erweiterungen vollständig"
 
 # ── Composer auflösen ─────────────────────────────────────────────────────────
 COMPOSER="$(env_value COMPOSER_PHAR)"
@@ -108,28 +156,32 @@ if [ -z "$COMPOSER" ]; then
     if [ -f "$_c" ]; then COMPOSER="$_c"; break; fi
   done
 fi
-if [ -z "$COMPOSER" ] || [ ! -f "$COMPOSER" ]; then
-  echo "X Kein composer.phar gefunden. COMPOSER_PHAR in .env setzen oder Plesk-Composer-Erweiterung installieren."
-  exit 1
-fi
-echo "==> Composer: $COMPOSER"
-
-# HOME ist im Deploy-Kontext oft / oder leer -> Composer-Verzeichnisse im Projekt ablegen.
-mkdir -p var/cache
-export COMPOSER_HOME="$PWD/var/cache/composer-home"
-export COMPOSER_CACHE_DIR="$PWD/var/cache/composer-cache"
-export COMPOSER_ALLOW_SUPERUSER=1
 
 if [ ! -f .env ]; then
-  echo "X .env fehlt. Einmalig anlegen (DATABASE_URL, APP_SECRET, APP_ENV=prod), siehe .env.dist."
+  log "X .env fehlt im Anwendungsstamm. Einmalig anlegen (DATABASE_URL, APP_SECRET, APP_ENV=prod), siehe .env.dist."
   exit 1
 fi
 
-echo "==> Abhängigkeiten installieren"
-"$PHP" "$COMPOSER" install --no-dev --optimize-autoloader --no-interaction --no-progress
+if [ -n "$COMPOSER" ] && [ -f "$COMPOSER" ]; then
+  log "==> Composer: $COMPOSER"
+  # HOME ist im Deploy-Kontext oft / oder leer -> Composer-Verzeichnisse im Projekt ablegen.
+  export COMPOSER_HOME="$PWD/var/cache/composer-home"
+  export COMPOSER_CACHE_DIR="$PWD/var/cache/composer-cache"
+  export COMPOSER_ALLOW_SUPERUSER=1
+  mkdir -p var/cache
+  log "==> Abhängigkeiten installieren (composer install)"
+  run_logged "$PHP" "$COMPOSER" install --no-dev --optimize-autoloader --no-interaction --no-progress
+elif [ -f vendor/autoload.php ]; then
+  log "! Kein Composer gefunden – das vorhandene vendor/ wird verwendet."
+else
+  log "X Weder composer.phar noch vendor/ vorhanden. COMPOSER_PHAR in .env setzen, Plesk-Composer-Erweiterung installieren oder vendor/ hochladen."
+  exit 1
+fi
 
-echo "==> Kimai aktualisieren (Migrationen, Cache, Assets)"
-"$PHP" bin/console kimai:update -n
+log "==> Assets installieren"
+run_logged "$PHP" bin/console assets:install public --env=prod
 
-echo "==> Passenger/PHP-Neustart nicht nötig; OPcache läuft nach Cache-Neuaufbau neu an"
-echo "OK: Deployment abgeschlossen."
+log "==> Kimai aktualisieren (Migrationen, Cache)"
+run_logged "$PHP" bin/console kimai:update -n
+
+log "OK: Deployment abgeschlossen."
