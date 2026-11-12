@@ -199,7 +199,7 @@ if [ -n "$COMPOSER" ] && [ -f "$COMPOSER" ]; then
   export COMPOSER_ALLOW_SUPERUSER=1
   mkdir -p var/cache
   log "==> Abhängigkeiten installieren (composer install)"
-  run_logged "$PHP" "$COMPOSER" install --no-dev --optimize-autoloader --no-interaction --no-progress
+  run_logged "$PHP" -d memory_limit=1G "$COMPOSER" install --no-dev --optimize-autoloader --no-interaction --no-progress --no-scripts
 elif [ -f vendor/autoload.php ]; then
   log "! Kein Composer gefunden – das vorhandene vendor/ wird verwendet."
 else
@@ -208,9 +208,9 @@ else
 fi
 
 log "==> Assets installieren"
-run_logged "$PHP" bin/console assets:install public --env=prod
+run_logged "$PHP" -d memory_limit=1G bin/console assets:install public --env=prod
 
 log "==> Kimai aktualisieren (Migrationen, Cache)"
-run_logged "$PHP" bin/console kimai:update -n
+run_logged "$PHP" -d memory_limit=1G bin/console kimai:update -n
 
 log "OK: Deployment abgeschlossen."

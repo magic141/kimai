@@ -139,8 +139,10 @@ if ($composer !== '' && is_file($composer)) {
         'COMPOSER_CACHE_DIR' => $root . '/var/cache/composer-cache',
         'COMPOSER_ALLOW_SUPERUSER' => '1',
     ];
+    // Ohne Composer-Skripte: cache:clear und assets:install laufen unten mit dem erhöhten Speicherlimit
+    // (Kindprozesse von Composer erben das -d memory_limit nicht und scheitern mit 128 MB).
     logmsg('==> Abhängigkeiten installieren (composer install)');
-    $cmd = array_merge([PHP_BINARY], $memory, [$composer, 'install', '--no-dev', '--optimize-autoloader', '--no-interaction', '--no-progress']);
+    $cmd = array_merge([PHP_BINARY], $memory, [$composer, 'install', '--no-dev', '--optimize-autoloader', '--no-interaction', '--no-progress', '--no-scripts']);
     if (runStep($cmd, $env) !== 0) {
         failDeploy('composer install ist fehlgeschlagen (Ausgabe oben).');
     }
