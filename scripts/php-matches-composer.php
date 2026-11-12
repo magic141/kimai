@@ -2,7 +2,7 @@
 
 /*
  * Exit-Code 0, wenn die laufende PHP-Version zum "php"-Constraint in der
- * composer.json passt, sonst 1. Wird von scripts/post-deploy.sh benutzt, um die
+ * composer.json passt, sonst 1. Wird von scripts/deploy.php benutzt, um die
  * passende Plesk-PHP-Version zu wählen.
  *
  * Aufruf: php scripts/php-matches-composer.php [composer.json] [--print]
