@@ -147,6 +147,14 @@ else
   done
 fi
 
+if [ -z "$PHP" ] && [ -z "$_seen" ] && [ -z "$_cand_ver" ]; then
+  # Kein PHP in diesem (abgeschotteten) Kontext: Deploy anfordern. Die geplante Aufgabe
+  # "PHP-Skript ausführen" scripts/deploy.php --if-requested führt ihn aus.
+  printf '%s\n' "$(printf '%(%Y-%m-%d %H:%M:%S)T' -1 2>/dev/null)" > var/deploy.requested
+  log "! Kein PHP in diesem Kontext. Deploy angefordert (var/deploy.requested); die geplante Aufgabe scripts/deploy.php --if-requested führt ihn aus."
+  exit 0
+fi
+
 if [ -z "$PHP" ]; then
   if [ -n "$_cand_ver" ]; then
     log "X PHP $_cand_ver passt zur composer.json, es fehlen aber Erweiterungen: $_cand_missing"
